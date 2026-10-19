@@ -1223,9 +1223,9 @@ def _load_base_checkpoint(
             iteration, release = read_metadata(tracker_filename)
 
     # Allow user to specify the loaded iteration.
-    if getattr(args, "ckpt_step", None):
-        iteration = args.ckpt_step
     ckpt_step = getattr(args, "ckpt_step", None)
+    if ckpt_step:
+        iteration = ckpt_step
 
     # Record the iteration loaded (stored separately from args to avoid
     # polluting checkpoints, since args is saved in checkpoints).
