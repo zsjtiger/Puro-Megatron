@@ -376,6 +376,59 @@ def test_muon_qkv_partition_layout_round_trip():
     )
 
 
+def test_muon_gated_qkv_partition_round_trip():
+    """Gated QKV stores [q, gate, k, v] per query group; each part must map back exactly."""
+    param = torch.nn.Parameter(torch.arange(36, dtype=torch.float32).view(12, 3))
+    param.is_qkv = True
+    optimizer = TensorParallelMuon(
+        [param],
+        lr=0.1,
+        momentum=0.0,
+        nesterov=False,
+        weight_decay=0.0,
+        qkv_ns_mode="separate",
+        qkv_norm_mode="separate",
+        is_qkv_fn=lambda p: getattr(p, "is_qkv", False),
+        qkv_split_shapes=(2, 2, 1, 1),
+        num_ns_steps=1,
+        pg_collection=None,
+    )
+
+    parts = optimizer._matrix_partition_parts(param, param)
+    assert [tag for tag, _ in parts] == ["linear_q", "linear_gate", "linear_k", "linear_v"]
+    matrices = [optimizer._partition_as_matrix(part) for _, part in parts]
+    assert [tuple(m.shape) for m in matrices] == [(4, 3), (4, 3), (2, 3), (2, 3)]
+    assert torch.equal(
+        optimizer._merge_matrix_partitions(param, matrices, param.shape), param
+    )
+
+
+def test_muon_split_qkv_conflicts_with_qkv_ns_mode():
+    param = torch.nn.Parameter(torch.ones(8, 3))
+    with pytest.raises(ValueError, match="conflicts"):
+        TensorParallelMuon(
+            [param],
+            lr=0.1,
+            split_qkv=True,
+            qkv_ns_mode="fused",
+            pg_collection=None,
+        )
+
+
+def test_muon_qkv_partitioning_rejects_invalid_split_shapes_at_construction():
+    param = torch.nn.Parameter(torch.ones(8, 3))
+    param.is_qkv = True
+    with pytest.raises(ValueError, match="split shapes"):
+        TensorParallelMuon(
+            [param],
+            lr=0.1,
+            qkv_ns_mode="separate",
+            is_qkv_fn=lambda p: getattr(p, "is_qkv", False),
+            qkv_split_shapes=(2, 1),
+            pg_collection=None,
+        )
+
+
 @pytest.mark.parametrize(
     ("family", "mode", "expected_calls"),
     [

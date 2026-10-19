@@ -185,13 +185,31 @@ def _is_hyperball_matrix(param, name: str) -> bool:
     return True
 
 
+_QKV_PART_TAGS = {
+    3: ("linear_q", "linear_k", "linear_v"),
+    4: ("linear_q", "linear_gate", "linear_k", "linear_v"),
+}
+
+
+def _validate_qkv_split_shapes(qkv_split_shapes) -> None:
+    """Require Q/K/V split shapes, or Q/gate/K/V for gated attention."""
+    if qkv_split_shapes is None or len(qkv_split_shapes) not in _QKV_PART_TAGS:
+        raise ValueError(
+            "Muon QKV partitioning requires Q/K/V split shapes, or Q/gate/K/V "
+            f"split shapes for gated attention; got {qkv_split_shapes}"
+        )
+
+
 def _get_qkv_split_shapes(model_cfg) -> List[int]:
-    """Compute QKV split shapes from model config."""
-    return [
-        model_cfg.num_attention_heads // model_cfg.num_query_groups * model_cfg.kv_channels,
-        model_cfg.kv_channels,
-        model_cfg.kv_channels,
-    ]
+    """Compute per-query-group QKV split shapes from model config.
+
+    With an output gate, the fused linear_qkv weight stores [q, gate, k, v] per group.
+    """
+    heads_per_group = model_cfg.num_attention_heads // model_cfg.num_query_groups
+    query_width = heads_per_group * model_cfg.kv_channels
+    if model_cfg.attention_output_gate:
+        return [query_width, query_width, model_cfg.kv_channels, model_cfg.kv_channels]
+    return [query_width, model_cfg.kv_channels, model_cfg.kv_channels]
 
 
 # ===========================================================================
@@ -298,6 +316,12 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
         if strict_effective_lr and not use_decoupled_weight_decay:
             raise ValueError("Muon strict effective LR requires decoupled weight decay")
         valid_matrix_modes = ("fused", "separate")
+        if split_qkv is not None and qkv_ns_mode is not None:
+            if split_qkv != (qkv_ns_mode == "separate"):
+                raise ValueError(
+                    f"split_qkv={split_qkv} conflicts with qkv_ns_mode={qkv_ns_mode!r}; "
+                    "pass only qkv_ns_mode"
+                )
         if qkv_ns_mode is None:
             qkv_ns_mode = "separate" if split_qkv else "fused"
         elif qkv_ns_mode not in valid_matrix_modes:
@@ -309,12 +333,9 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
         ):
             if mode not in valid_matrix_modes:
                 raise ValueError(f"Invalid {mode_name}: {mode}")
-        if qkv_norm_mode == "separate" and qkv_split_shapes is not None:
-            if len(qkv_split_shapes) != 3:
-                raise ValueError(
-                    "Separate QKV norm mode requires exactly Q/K/V split shapes; "
-                    "gated attention is not supported yet"
-                )
+        qkv_partitioned = qkv_ns_mode == "separate" or qkv_norm_mode == "separate"
+        if qkv_partitioned and is_qkv_fn is not None:
+            _validate_qkv_split_shapes(qkv_split_shapes)
 
         def scaled_orthogonalize_fn(
             grad: torch.Tensor,
@@ -399,8 +420,7 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
         """Expose logical projection views without changing the fused layout."""
         kind = self._matrix_partition_kind(p)
         if kind == "qkv":
-            if self.qkv_split_shapes is None or len(self.qkv_split_shapes) != 3:
-                raise ValueError("Muon QKV partitioning requires Q/K/V split shapes")
+            _validate_qkv_split_shapes(self.qkv_split_shapes)
             partition_width = sum(self.qkv_split_shapes)
             if tensor.ndim != 2 or tensor.shape[0] % partition_width != 0:
                 raise ValueError(
@@ -410,7 +430,7 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
             num_query_groups = tensor.shape[0] // partition_width
             grouped = tensor.view(num_query_groups, partition_width, tensor.shape[-1])
             parts = torch.split(grouped, self.qkv_split_shapes, dim=1)
-            return list(zip(("linear_q", "linear_k", "linear_v"), parts))
+            return list(zip(_QKV_PART_TAGS[len(self.qkv_split_shapes)], parts))
 
         if kind == "swiglu_fc1":
             if tensor.ndim != 2 or tensor.shape[0] % 2 != 0:

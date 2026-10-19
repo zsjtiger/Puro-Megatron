@@ -1242,10 +1242,6 @@ def validate_args(args, defaults={}):
         assert args.optimizer in ('muon', 'muon_hyperball'), (
             "Separate Muon matrix modes require --optimizer muon or muon_hyperball."
         )
-    if args.attention_output_gate:
-        assert args.muon_qkv_norm_mode == 'fused', (
-            "Gated attention does not support --muon-qkv-norm-mode separate."
-        )
     if args.optimizer == 'muon_hyperball' and (
         args.muon_qkv_norm_mode == 'separate'
         or args.muon_swiglu_norm_mode == 'separate'
