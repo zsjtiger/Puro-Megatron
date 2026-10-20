@@ -22,6 +22,7 @@ quickstart
 msc_integration
 data-preparation
 training-examples
+puro-training
 parallelism-guide
 features/index
 ```

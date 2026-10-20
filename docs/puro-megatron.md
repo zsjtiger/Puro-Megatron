@@ -77,6 +77,9 @@ effective-LR diagnostics.
 
 ## Minimal Puro-2B recipes
 
+For a step-by-step guide to running these phases, see the
+[Puro training guide](user-guide/puro-training.md).
+
 [`examples/puro/run_puro_2b.sh`](../examples/puro/run_puro_2b.sh) contains the
 three launcher-neutral entry points retained for release:
 
